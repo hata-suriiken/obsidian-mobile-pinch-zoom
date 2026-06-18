@@ -5,6 +5,7 @@ Pinch with two fingers to zoom your notes in and out on **Obsidian mobile (iPad 
 Obsidian mobile has no built-in content zoom and no status bar, so this plugin adds:
 
 - **Two-finger pinch** to zoom the note in/out (smooth, frame-throttled).
+- Also zooms **standalone PDF and image files** opened in their own tab (works in either zoom mode).
 - A floating **🔍 indicator** showing the current zoom; **tap it to reset to 100%**.
 - Commands **Zoom in / Zoom out / Reset zoom** with eased animation (assignable to hotkeys).
 

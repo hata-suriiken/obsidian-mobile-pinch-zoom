@@ -1,7 +1,7 @@
 {
   "id": "mobile-pinch-zoom",
   "name": "Mobile Pinch Zoom",
-  "version": "0.3.0",
+  "version": "0.5.0",
   "minAppVersion": "1.4.0",
   "description": "Pinch with two fingers to zoom notes in/out on mobile (iPad/iPhone/Android). Choose content zoom (scales everything) or text-size zoom.",
   "author": "hata-suriiken",

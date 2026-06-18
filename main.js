@@ -51,6 +51,9 @@ module.exports = class MobilePinchZoomPlugin extends Plugin {
     this.createIndicator();
     this.applyZoom(this.settings.zoom);
     this.updateIndicator();
+    this.applyMediaZoom();
+    // PDF / image files render in their own view; re-apply zoom when the active view changes.
+    this.registerEvent(this.app.workspace.on('active-leaf-change', () => this.applyMediaZoom()));
 
     this.pinch = null;
     const target = document.body;
@@ -121,6 +124,7 @@ module.exports = class MobilePinchZoomPlugin extends Plugin {
     this.settings.zoom = c;
     this.applyZoom(c);
     this.updateIndicator();
+    this.applyMediaZoom();
   }
 
   // Live pinch: coalesce many touchmove events into one apply per frame.
@@ -179,6 +183,18 @@ module.exports = class MobilePinchZoomPlugin extends Plugin {
 
   applyZoom(z) {
     document.body.style.setProperty('--mpz-zoom', String(z));
+  }
+
+  // PDF / image files render in their own view that CSS selectors don't reliably
+  // hit; grab the active view's content element directly and scale it.
+  applyMediaZoom() {
+    const leaf = this.app.workspace.activeLeaf;
+    const view = leaf && leaf.view;
+    if (!view || !view.contentEl || !view.getViewType) return;
+    const type = view.getViewType();
+    if (type === 'pdf' || type === 'image') {
+      view.contentEl.style.zoom = String(this.settings.zoom);
+    }
   }
 
   // --- indicator ------------------------------------------------------------
