@@ -5,9 +5,13 @@ Pinch with two fingers to zoom your notes in and out on **Obsidian mobile (iPad 
 Obsidian mobile has no built-in content zoom and no status bar, so this plugin adds:
 
 - **Two-finger pinch** to zoom the note in/out (smooth, frame-throttled).
+- **Anchored zoom** — the point between your fingers stays put while you pinch; commands zoom toward the viewport center.
+- **Trackpad pinch** (ctrl+wheel, e.g. iPad Magic Keyboard) zooms too.
+- **Snap to 100%** — ending a gesture within ±5% of 100% glides back to exactly 100%.
 - Also zooms **standalone PDF and image files** opened in their own tab (works in either zoom mode).
-- A floating **🔍 indicator** showing the current zoom; **tap it to reset to 100%**.
+- A floating **🔍 indicator** showing the current zoom; **tap it to reset to 100%**. By default it fades out shortly after zooming (configurable: auto / always / hidden).
 - Commands **Zoom in / Zoom out / Reset zoom** with eased animation (assignable to hotkeys).
+- **Canvas and Excalidraw are left alone** — they have their own pinch zoom.
 
 > **Desktop companion:** on desktop use [Ctrl+Scroll Zoom](https://github.com/hata-suriiken/obsidian-ctrl-scroll-zoom). This plugin activates only on mobile and no-ops on desktop.
 
@@ -19,7 +23,7 @@ Obsidian mobile has no built-in content zoom and no status bar, so this plugin a
 ## Settings
 
 - Zoom mode, zoom step (for the commands), minimum/maximum zoom
-- Indicator: show/hide, and position (any of the four corners)
+- Indicator: auto-fade / always / hidden, and position (any of the four corners)
 
 ## Installation
 

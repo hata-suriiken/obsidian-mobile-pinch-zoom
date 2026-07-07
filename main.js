@@ -1,7 +1,7 @@
 'use strict';
 
 /*
- * Mobile Pinch Zoom — Obsidian plugin (mobile only) — v0.3.0
+ * Mobile Pinch Zoom — Obsidian plugin (mobile only) — v0.6.0
  * Pinch with two fingers to zoom the note in/out on iPad / iPhone / Android.
  * Desktop uses the separate "Ctrl+Scroll Zoom" plugin, so this no-ops on desktop.
  *
@@ -10,6 +10,15 @@
  *   - pinch updates are throttled to one apply per animation frame (no thrash);
  *   - the Zoom in / Zoom out commands, the indicator tap, and Reset glide to the
  *     target with eased animation instead of jumping.
+ * v0.5.0: zoom standalone PDF and image files.
+ * v0.6.0: iPad polish —
+ *   - zoom is anchored: pinch zooms toward the point between your fingers,
+ *     commands zoom toward the viewport center (scroll is compensated);
+ *   - trackpad pinch (ctrl+wheel, e.g. iPad Magic Keyboard) zooms too;
+ *   - zoom snaps to 100% when a gesture ends within ±5% of it;
+ *   - the indicator auto-fades after zooming (modes: auto / always / hidden);
+ *   - Canvas and Excalidraw are left alone — they have their own pinch;
+ *   - settings writes are debounced; deprecated activeLeaf API replaced.
  */
 
 const { Plugin, PluginSettingTab, Setting, Platform } = require('obsidian');
@@ -20,7 +29,7 @@ const DEFAULT_SETTINGS = {
   maxZoom: 4.0,
   step: 0.2, // amount per Zoom in / Zoom out command
   zoom: 1.0,
-  showIndicator: true,
+  indicatorMode: 'auto', // auto (fade after zooming) | always | hidden
   indicatorPosition: 'bottom-right', // bottom-right | bottom-left | top-right | top-left
 };
 
@@ -32,6 +41,13 @@ const POSITION_CLASS = {
 };
 
 const ANIM_MS = 180;
+const SNAP_RANGE = 0.05; // gesture ending within ±5% of 100% snaps to 100%
+const INDICATOR_FADE_MS = 1500;
+const SAVE_DEBOUNCE_MS = 800;
+const WHEEL_SESSION_GAP_MS = 300; // a pause longer than this starts a new anchored session
+
+// Views that implement their own pinch zoom — never intercept touches inside them.
+const EXCLUDE_SELECTOR = '.canvas-wrapper, .excalidraw, .excalidraw-wrapper';
 
 module.exports = class MobilePinchZoomPlugin extends Plugin {
   async onload() {
@@ -46,6 +62,11 @@ module.exports = class MobilePinchZoomPlugin extends Plugin {
     this._raf = null;
     this._pending = null;
     this._anim = null;
+    this._anchor = null;
+    this._wheel = null;
+    this._wheelTimer = null;
+    this._saveTimer = null;
+    this._fadeTimer = null;
 
     this.injectStyle();
     this.createIndicator();
@@ -63,7 +84,10 @@ module.exports = class MobilePinchZoomPlugin extends Plugin {
       'touchstart',
       (e) => {
         if (e.touches.length === 2) {
+          if (this.isExcluded(e.target)) return;
           this.cancelAnim(); // a finger gesture takes over from any glide
+          const midY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+          this._anchor = this.beginAnchor(e.target, midY);
           this.pinch = { startDist: this.dist(e.touches), startZoom: this.settings.zoom };
         }
       },
@@ -87,11 +111,39 @@ module.exports = class MobilePinchZoomPlugin extends Plugin {
       if (this.pinch && (!e.touches || e.touches.length < 2)) {
         this.pinch = null;
         this.flushApply();
-        this.saveSettings();
+        this._anchor = null;
+        this.settleZoom();
       }
     };
     this.registerDomEvent(target, 'touchend', end, { passive: true, capture: true });
     this.registerDomEvent(target, 'touchcancel', end, { passive: true, capture: true });
+
+    // Trackpad pinch (e.g. iPad Magic Keyboard) arrives as a wheel event with ctrlKey set.
+    this.registerDomEvent(
+      target,
+      'wheel',
+      (e) => {
+        if (!e.ctrlKey && !e.metaKey) return;
+        if (this.isExcluded(e.target)) return;
+        e.preventDefault();
+        this.cancelAnim();
+        const now = performance.now();
+        if (!this._wheel || now - this._wheel.last > WHEEL_SESSION_GAP_MS) {
+          this._anchor = this.beginAnchor(e.target, e.clientY);
+          this._wheel = { target: this.settings.zoom, last: now };
+        }
+        this._wheel.last = now;
+        this._wheel.target = this.clamp(this._wheel.target * Math.exp(-e.deltaY / 100));
+        this.requestApply(this._wheel.target);
+        clearTimeout(this._wheelTimer);
+        this._wheelTimer = setTimeout(() => {
+          this._wheel = null;
+          this._anchor = null;
+          this.settleZoom();
+        }, WHEEL_SESSION_GAP_MS + 50);
+      },
+      { passive: false, capture: true }
+    );
 
     this.addCommand({ id: 'reset-zoom', name: 'Reset zoom to 100%', callback: () => this.animateTo(1.0) });
     this.addCommand({ id: 'zoom-in', name: 'Zoom in', callback: () => this.animateTo(this.settings.zoom + this.settings.step) });
@@ -100,6 +152,13 @@ module.exports = class MobilePinchZoomPlugin extends Plugin {
     this.register(() => {
       this.cancelAnim();
       if (this._raf != null) cancelAnimationFrame(this._raf);
+      clearTimeout(this._wheelTimer);
+      clearTimeout(this._fadeTimer);
+      if (this._saveTimer != null) {
+        clearTimeout(this._saveTimer);
+        this._saveTimer = null;
+        this.saveSettings();
+      }
     });
 
     this.addSettingTab(new MPZSettingTab(this.app, this));
@@ -116,6 +175,45 @@ module.exports = class MobilePinchZoomPlugin extends Plugin {
     return Math.min(this.settings.maxZoom, Math.max(this.settings.minZoom, z));
   }
 
+  isExcluded(target) {
+    return !!(target instanceof Element && target.closest(EXCLUDE_SELECTOR));
+  }
+
+  // --- scroll anchoring -------------------------------------------------------
+
+  // The scrollable note container at/under the gesture, or in the active view.
+  findScroller(target) {
+    if (target instanceof Element) {
+      const hit = target.closest('.cm-scroller, .markdown-preview-view');
+      if (hit) return hit;
+    }
+    const leaf = this.app.workspace.getMostRecentLeaf();
+    const contentEl = leaf && leaf.view && leaf.view.contentEl;
+    return contentEl ? contentEl.querySelector('.cm-scroller, .markdown-preview-view') : null;
+  }
+
+  // Remember where the gesture is so commits can keep that point stationary.
+  beginAnchor(target, clientY) {
+    const scroller = this.findScroller(target);
+    if (!scroller) return null;
+    return {
+      scroller,
+      offsetY: clientY - scroller.getBoundingClientRect().top,
+      startZoom: this.settings.zoom,
+      startScroll: scroller.scrollTop,
+      // In content mode the preview zooms the scroller itself, so its scroll
+      // coordinates live in the zoomed space; the editor zooms a child (.cm-sizer).
+      zoomedScroller: this.settings.mode === 'content' && scroller.classList.contains('markdown-preview-view'),
+    };
+  }
+
+  applyAnchor(anchor, z) {
+    const { scroller, offsetY, startZoom, startScroll, zoomedScroller } = anchor;
+    scroller.scrollTop = zoomedScroller
+      ? startScroll + offsetY / startZoom - offsetY / z
+      : (startScroll + offsetY) * (z / startZoom) - offsetY;
+  }
+
   // --- zoom application -----------------------------------------------------
 
   // Apply a value immediately (clamps, updates CSS var + indicator). No save.
@@ -123,6 +221,7 @@ module.exports = class MobilePinchZoomPlugin extends Plugin {
     const c = this.clamp(z);
     this.settings.zoom = c;
     this.applyZoom(c);
+    if (this._anchor) this.applyAnchor(this._anchor, c);
     this.updateIndicator();
     this.applyMediaZoom();
   }
@@ -155,15 +254,31 @@ module.exports = class MobilePinchZoomPlugin extends Plugin {
     }
   }
 
-  // Eased glide to a target zoom (commands, indicator tap, reset).
+  // Gesture finished: snap to 100% if close, then persist.
+  settleZoom() {
+    const z = this.settings.zoom;
+    if (z !== 1 && Math.abs(z - 1) <= SNAP_RANGE) {
+      this.animateTo(1.0);
+    } else {
+      this.scheduleSave();
+    }
+  }
+
+  // Eased glide to a target zoom (commands, indicator tap, reset, snap).
   animateTo(target) {
     this.cancelAnim();
     const from = this.settings.zoom;
     const to = this.clamp(target);
     if (Math.abs(to - from) < 0.001) {
       this.commit(to);
-      this.saveSettings();
+      this.scheduleSave();
       return;
+    }
+    // Anchor commands/reset to the viewport center so the middle of the note stays put.
+    const scroller = this.findScroller(null);
+    if (scroller) {
+      const rect = scroller.getBoundingClientRect();
+      this._anchor = this.beginAnchor(scroller, rect.top + rect.height / 2);
     }
     const start = performance.now();
     const ease = (t) => 1 - Math.pow(1 - t, 3); // easeOutCubic
@@ -175,7 +290,8 @@ module.exports = class MobilePinchZoomPlugin extends Plugin {
       } else {
         this._anim = null;
         this.commit(to);
-        this.saveSettings();
+        this._anchor = null;
+        this.scheduleSave();
       }
     };
     this._anim = requestAnimationFrame(step);
@@ -188,7 +304,7 @@ module.exports = class MobilePinchZoomPlugin extends Plugin {
   // PDF / image files render in their own view that CSS selectors don't reliably
   // hit; grab the active view's content element directly and scale it.
   applyMediaZoom() {
-    const leaf = this.app.workspace.activeLeaf;
+    const leaf = this.app.workspace.getMostRecentLeaf();
     const view = leaf && leaf.view;
     if (!view || !view.contentEl || !view.getViewType) return;
     const type = view.getViewType();
@@ -222,7 +338,15 @@ module.exports = class MobilePinchZoomPlugin extends Plugin {
     if (!this.indicatorEl) return;
     const pct = Math.round(this.settings.zoom * 100);
     this.indicatorEl.setText('🔍 ' + pct + '%');
-    this.indicatorEl.toggleClass('mpz-hidden', !this.settings.showIndicator);
+    const mode = this.settings.indicatorMode;
+    this.indicatorEl.toggleClass('mpz-hidden', mode === 'hidden');
+    this.indicatorEl.removeClass('mpz-faded');
+    clearTimeout(this._fadeTimer);
+    if (mode === 'auto') {
+      this._fadeTimer = setTimeout(() => {
+        if (this.indicatorEl) this.indicatorEl.addClass('mpz-faded');
+      }, INDICATOR_FADE_MS);
+    }
   }
 
   // --- styling --------------------------------------------------------------
@@ -255,8 +379,10 @@ module.exports = class MobilePinchZoomPlugin extends Plugin {
       '  box-shadow: 0 1px 6px rgba(0,0,0,0.35); opacity: 0.85;',
       '  cursor: pointer; -webkit-user-select: none; user-select: none;',
       '  -webkit-tap-highlight-color: transparent;',
+      '  transition: opacity 0.25s ease;',
       '}',
       '.mpz-indicator:active { opacity: 1; transform: scale(0.96); }',
+      '.mpz-faded { opacity: 0 !important; pointer-events: none; }',
       '.mpz-pos-bottom-right { bottom: calc(env(safe-area-inset-bottom, 0px) + 64px); right: calc(env(safe-area-inset-right, 0px) + 12px); }',
       '.mpz-pos-bottom-left  { bottom: calc(env(safe-area-inset-bottom, 0px) + 64px); left:  calc(env(safe-area-inset-left, 0px) + 12px); }',
       '.mpz-pos-top-right    { top: calc(env(safe-area-inset-top, 0px) + 12px); right: calc(env(safe-area-inset-right, 0px) + 12px); }',
@@ -269,11 +395,23 @@ module.exports = class MobilePinchZoomPlugin extends Plugin {
   // --- settings io ----------------------------------------------------------
 
   async loadSettings() {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    const data = (await this.loadData()) || {};
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, data);
+    // v0.5.0 had a showIndicator boolean; fold it into indicatorMode.
+    if (!data.indicatorMode && data.showIndicator === false) this.settings.indicatorMode = 'hidden';
+    delete this.settings.showIndicator;
   }
 
   async saveSettings() {
     await this.saveData(this.settings);
+  }
+
+  scheduleSave() {
+    clearTimeout(this._saveTimer);
+    this._saveTimer = setTimeout(() => {
+      this._saveTimer = null;
+      this.saveSettings();
+    }, SAVE_DEBOUNCE_MS);
   }
 };
 
@@ -319,14 +457,19 @@ class MPZSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName('Show zoom indicator')
-      .setDesc('Floating 🔍 badge showing the current zoom; tap it to reset to 100%.')
-      .addToggle((t) =>
-        t.setValue(this.plugin.settings.showIndicator).onChange(async (v) => {
-          this.plugin.settings.showIndicator = v;
-          await this.plugin.saveSettings();
-          this.plugin.updateIndicator();
-        })
+      .setName('Zoom indicator')
+      .setDesc('Floating 🔍 badge showing the current zoom; tap it to reset to 100%. Auto = fades out shortly after zooming.')
+      .addDropdown((d) =>
+        d
+          .addOption('auto', 'Auto (fade after zooming)')
+          .addOption('always', 'Always visible')
+          .addOption('hidden', 'Hidden')
+          .setValue(this.plugin.settings.indicatorMode)
+          .onChange(async (v) => {
+            this.plugin.settings.indicatorMode = v;
+            await this.plugin.saveSettings();
+            this.plugin.updateIndicator();
+          })
       );
 
     new Setting(containerEl)
@@ -350,7 +493,7 @@ class MPZSettingTab extends PluginSettingTab {
       .addText((t) =>
         t.setValue(String(this.plugin.settings.minZoom)).onChange(async (v) => {
           const n = parseFloat(v);
-          if (!isNaN(n) && n > 0) {
+          if (!isNaN(n) && n > 0 && n <= this.plugin.settings.maxZoom) {
             this.plugin.settings.minZoom = n;
             await this.plugin.saveSettings();
           }
@@ -362,7 +505,7 @@ class MPZSettingTab extends PluginSettingTab {
       .addText((t) =>
         t.setValue(String(this.plugin.settings.maxZoom)).onChange(async (v) => {
           const n = parseFloat(v);
-          if (!isNaN(n) && n > 0) {
+          if (!isNaN(n) && n >= this.plugin.settings.minZoom) {
             this.plugin.settings.maxZoom = n;
             await this.plugin.saveSettings();
           }
