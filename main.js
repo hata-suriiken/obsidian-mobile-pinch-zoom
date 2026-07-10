@@ -1,7 +1,7 @@
 'use strict';
 
 /*
- * Mobile Pinch Zoom — Obsidian plugin (mobile only) — v0.6.0
+ * Mobile Pinch Zoom — Obsidian plugin (mobile only) — v0.6.1
  * Pinch with two fingers to zoom the note in/out on iPad / iPhone / Android.
  * Desktop uses the separate "Ctrl+Scroll Zoom" plugin, so this no-ops on desktop.
  *
@@ -19,6 +19,11 @@
  *   - the indicator auto-fades after zooming (modes: auto / always / hidden);
  *   - Canvas and Excalidraw are left alone — they have their own pinch;
  *   - settings writes are debounced; deprecated activeLeaf API replaced.
+ * v0.6.1: fixes —
+ *   - PDF zoom no longer scales the PDF toolbar, only the pages below it;
+ *   - the auto-fading indicator stays visible while zoom ≠ 100% (it is the
+ *     only reset button on mobile) and fades only once back at 100%;
+ *   - the indicator sits above more of the app chrome (z-index raised).
  */
 
 const { Plugin, PluginSettingTab, Setting, Platform } = require('obsidian');
@@ -67,6 +72,8 @@ module.exports = class MobilePinchZoomPlugin extends Plugin {
     this._wheelTimer = null;
     this._saveTimer = null;
     this._fadeTimer = null;
+    this._mediaRetryTimer = null;
+    this._mediaZoomTargets = new Set();
 
     this.injectStyle();
     this.createIndicator();
@@ -154,6 +161,9 @@ module.exports = class MobilePinchZoomPlugin extends Plugin {
       if (this._raf != null) cancelAnimationFrame(this._raf);
       clearTimeout(this._wheelTimer);
       clearTimeout(this._fadeTimer);
+      clearTimeout(this._mediaRetryTimer);
+      for (const el of this._mediaZoomTargets) el.style.zoom = '';
+      this._mediaZoomTargets.clear();
       if (this._saveTimer != null) {
         clearTimeout(this._saveTimer);
         this._saveTimer = null;
@@ -303,14 +313,37 @@ module.exports = class MobilePinchZoomPlugin extends Plugin {
 
   // PDF / image files render in their own view that CSS selectors don't reliably
   // hit; grab the active view's content element directly and scale it.
-  applyMediaZoom() {
+  applyMediaZoom(attempt = 0) {
+    // The gesture state (incl. _mediaZoomTargets) only exists on mobile, but
+    // the settings tab's Reset button can reach this on desktop too.
+    if (!Platform.isMobile) return;
+    // Drop entries whose view has been closed so their DOM can be GC'd.
+    for (const old of this._mediaZoomTargets) {
+      if (!old.isConnected) this._mediaZoomTargets.delete(old);
+    }
     const leaf = this.app.workspace.getMostRecentLeaf();
     const view = leaf && leaf.view;
     if (!view || !view.contentEl || !view.getViewType) return;
     const type = view.getViewType();
-    if (type === 'pdf' || type === 'image') {
-      view.contentEl.style.zoom = String(this.settings.zoom);
+    if (type !== 'pdf' && type !== 'image') return;
+    let el = view.contentEl;
+    if (type === 'pdf') {
+      // Scale only the pages, not the PDF toolbar that sits above them.
+      const inner = view.contentEl.querySelector('.pdf-content-container, .pdf-viewer-container');
+      if (!inner) {
+        // The PDF renders asynchronously; retry briefly after the view opens
+        // rather than falling back to contentEl (that would scale the toolbar).
+        if (attempt < 12) {
+          clearTimeout(this._mediaRetryTimer);
+          this._mediaRetryTimer = setTimeout(() => this.applyMediaZoom(attempt + 1), 250);
+        }
+        return;
+      }
+      el = inner;
+      view.contentEl.style.zoom = ''; // clear styling left by versions ≤ 0.6.0
     }
+    el.style.zoom = String(this.settings.zoom);
+    this._mediaZoomTargets.add(el);
   }
 
   // --- indicator ------------------------------------------------------------
@@ -342,7 +375,9 @@ module.exports = class MobilePinchZoomPlugin extends Plugin {
     this.indicatorEl.toggleClass('mpz-hidden', mode === 'hidden');
     this.indicatorEl.removeClass('mpz-faded');
     clearTimeout(this._fadeTimer);
-    if (mode === 'auto') {
+    // Auto mode: the badge is the only reset button on mobile, so keep it
+    // visible while zoomed; fade it out only once back at 100%.
+    if (mode === 'auto' && pct === 100) {
       this._fadeTimer = setTimeout(() => {
         if (this.indicatorEl) this.indicatorEl.addClass('mpz-faded');
       }, INDICATOR_FADE_MS);
@@ -369,7 +404,9 @@ module.exports = class MobilePinchZoomPlugin extends Plugin {
         : '.view-content .markdown-preview-view, .view-content .markdown-source-view .cm-sizer { zoom: var(--mpz-zoom, 1); }';
     const indicatorCss = [
       '.mpz-indicator {',
-      '  position: fixed; z-index: 25;',
+      // Above app chrome (status bar 15, popovers 30) but below modals (50),
+      // so the now-persistent badge never covers or steals taps from dialogs.
+      '  position: fixed; z-index: 45;',
       '  display: flex; align-items: center; justify-content: center;',
       '  min-width: 56px; min-height: 32px; padding: 6px 12px;',
       '  border-radius: 16px; box-sizing: border-box;',
