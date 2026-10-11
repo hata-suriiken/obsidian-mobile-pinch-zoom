@@ -1,7 +1,7 @@
 'use strict';
 
 /*
- * Mobile Pinch Zoom — Obsidian plugin (mobile only) — v0.7.0
+ * Mobile Pinch Zoom — Obsidian plugin (mobile only) — v0.8.0
  * Pinch with two fingers to zoom the note in/out on iPad / iPhone / Android.
  * Desktop uses the separate "Ctrl+Scroll Zoom" plugin, so this no-ops on desktop.
  *
@@ -27,6 +27,10 @@
  * v0.7.0: "Font size only" mode scales figures too —
  *   - images, videos, Mermaid diagrams and Excalidraw embeds now zoom with
  *     the text (each grows up to the pane width, same as in content mode).
+ * v0.8.0: figures grow past the pane edge —
+ *   - images carry max-width: 100%, so a figure that already filled the pane
+ *     could not get any bigger in either mode; now the cap scales with the
+ *     zoom and the part outside the pane pans inside the embed (toggleable).
  */
 
 const { Plugin, PluginSettingTab, Setting, Platform } = require('obsidian');
@@ -38,6 +42,7 @@ const DEFAULT_SETTINGS = {
   step: 0.2, // amount per Zoom in / Zoom out command
   zoom: 1.0,
   indicatorMode: 'auto', // auto (fade after zooming) | always | hidden
+  zoomFigures: true, // let images grow past the pane edge (pan to see the rest)
   indicatorPosition: 'bottom-right', // bottom-right | bottom-left | top-right | top-left
 };
 
@@ -414,6 +419,14 @@ module.exports = class MobilePinchZoomPlugin extends Plugin {
         ? '.markdown-source-view.mod-cm6 .cm-content, .markdown-preview-view { font-size: calc(var(--font-text-size, 16px) * var(--mpz-zoom, 1)) !important; }\n' +
           fontMediaRule
         : '.view-content .markdown-preview-view, .view-content .markdown-source-view .cm-sizer { zoom: var(--mpz-zoom, 1); }';
+    // Figure breakout: images carry max-width: 100%, so a figure that already
+    // fills the pane cannot get any bigger when the note zooms in. Raise the
+    // cap by the zoom factor and pan the overflow inside the embed; at 100%
+    // the cap equals the normal one, so the layout is unchanged.
+    const figureRule = this.settings.zoomFigures
+      ? '.view-content .markdown-preview-view .image-embed, .view-content .markdown-source-view .image-embed { display: inline-block; max-width: 100%; overflow-x: auto; }\n' +
+        '.view-content .markdown-preview-view .image-embed img, .view-content .markdown-source-view .image-embed img { max-width: calc(100% * var(--mpz-zoom, 1)); }'
+      : '';
     const indicatorCss = [
       '.mpz-indicator {',
       // Above app chrome (status bar 15, popovers 30) but below modals (50),
@@ -438,7 +451,7 @@ module.exports = class MobilePinchZoomPlugin extends Plugin {
       '.mpz-pos-top-left     { top: calc(env(safe-area-inset-top, 0px) + 12px); left:  calc(env(safe-area-inset-left, 0px) + 12px); }',
       '.mpz-hidden { display: none !important; }',
     ].join('\n');
-    this.styleEl.textContent = zoomRule + '\n' + indicatorCss;
+    this.styleEl.textContent = zoomRule + '\n' + figureRule + '\n' + indicatorCss;
   }
 
   // --- settings io ----------------------------------------------------------
@@ -490,6 +503,19 @@ class MPZSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
             this.plugin.refreshStyle();
           })
+      );
+
+    new Setting(containerEl)
+      .setName('Let figures grow past the pane edge')
+      .setDesc(
+        'Images normally stop growing once they fill the pane; with this on they keep scaling with the zoom and the part outside the pane can be swiped sideways inside the figure. At 100% nothing changes.'
+      )
+      .addToggle((tg) =>
+        tg.setValue(this.plugin.settings.zoomFigures).onChange(async (v) => {
+          this.plugin.settings.zoomFigures = v;
+          await this.plugin.saveSettings();
+          this.plugin.refreshStyle();
+        })
       );
 
     new Setting(containerEl)

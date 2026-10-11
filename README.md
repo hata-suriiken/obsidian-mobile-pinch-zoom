@@ -12,6 +12,7 @@ Obsidian mobile has no built-in content zoom and no status bar, so this plugin a
 - A floating **🔍 indicator** showing the current zoom; **tap it to reset to 100%**. By default it stays visible while zoomed and fades out shortly after returning to 100% (configurable: auto / always / hidden).
 - Commands **Zoom in / Zoom out / Reset zoom** with eased animation (assignable to hotkeys).
 - **Canvas and Excalidraw are left alone** — they have their own pinch zoom.
+- **Figures keep growing** (v0.8.0) — images normally stop at the pane edge (`max-width: 100%`), so a full-width figure would not get any bigger while the text grows. Now figures keep scaling with the zoom past the pane edge; swipe sideways inside the figure to pan (can be turned off in settings).
 
 > **Desktop companion:** on desktop use [Ctrl+Scroll Zoom](https://github.com/hata-suriiken/obsidian-ctrl-scroll-zoom). This plugin activates only on mobile and no-ops on desktop.
 
