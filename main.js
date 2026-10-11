@@ -1,7 +1,7 @@
 'use strict';
 
 /*
- * Mobile Pinch Zoom — Obsidian plugin (mobile only) — v0.6.1
+ * Mobile Pinch Zoom — Obsidian plugin (mobile only) — v0.7.0
  * Pinch with two fingers to zoom the note in/out on iPad / iPhone / Android.
  * Desktop uses the separate "Ctrl+Scroll Zoom" plugin, so this no-ops on desktop.
  *
@@ -24,6 +24,9 @@
  *   - the auto-fading indicator stays visible while zoom ≠ 100% (it is the
  *     only reset button on mobile) and fades only once back at 100%;
  *   - the indicator sits above more of the app chrome (z-index raised).
+ * v0.7.0: "Font size only" mode scales figures too —
+ *   - images, videos, Mermaid diagrams and Excalidraw embeds now zoom with
+ *     the text (each grows up to the pane width, same as in content mode).
  */
 
 const { Plugin, PluginSettingTab, Setting, Platform } = require('obsidian');
@@ -398,9 +401,18 @@ module.exports = class MobilePinchZoomPlugin extends Plugin {
 
   refreshStyle() {
     if (!this.styleEl) return;
+    // Font mode scales only the text, which leaves figures at 100%; zoom the
+    // embedded media by the same factor so images, videos, Mermaid diagrams
+    // and Excalidraw embeds follow the text. CSS zoom respects max-width, so
+    // a figure grows until it fills the pane and never overflows sideways.
+    const fontMediaRule =
+      ['img', 'video', '.mermaid', '.excalidraw-svg']
+        .map((m) => '.markdown-preview-view ' + m + ', .markdown-source-view.mod-cm6 .cm-content ' + m)
+        .join(', ') + ' { zoom: var(--mpz-zoom, 1); }';
     const zoomRule =
       this.settings.mode === 'font'
-        ? '.markdown-source-view.mod-cm6 .cm-content, .markdown-preview-view { font-size: calc(var(--font-text-size, 16px) * var(--mpz-zoom, 1)) !important; }'
+        ? '.markdown-source-view.mod-cm6 .cm-content, .markdown-preview-view { font-size: calc(var(--font-text-size, 16px) * var(--mpz-zoom, 1)) !important; }\n' +
+          fontMediaRule
         : '.view-content .markdown-preview-view, .view-content .markdown-source-view .cm-sizer { zoom: var(--mpz-zoom, 1); }';
     const indicatorCss = [
       '.mpz-indicator {',
@@ -466,7 +478,7 @@ class MPZSettingTab extends PluginSettingTab {
       .setName('Zoom mode')
       .setDesc(
         'content = scale everything (text + images), smoothest, best in Reading view. ' +
-          'font = scale text only, solid in the editor.'
+          'font = scale the text via font-size (figures zoom along with it), solid in the editor.'
       )
       .addDropdown((d) =>
         d

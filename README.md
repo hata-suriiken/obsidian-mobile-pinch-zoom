@@ -18,7 +18,7 @@ Obsidian mobile has no built-in content zoom and no status bar, so this plugin a
 ## Zoom modes (Settings)
 
 - **Content** (default) — scales the whole note via CSS `zoom` (text + images + formulas). Smoothest, best in Reading view. In the editor the cursor may sit slightly off at non-100% zoom.
-- **Font size only** — scales just the text via font-size. Solid in the editor, but images/diagrams don't scale.
+- **Font size only** — scales the text via font-size; since v0.7.0 figures (images, videos, Mermaid diagrams, Excalidraw embeds) zoom along with it, each growing up to the pane width. Solid in the editor.
 
 ## Settings
 
@@ -40,7 +40,7 @@ Install the **BRAT** community plugin, then add `hata-suriiken/obsidian-mobile-p
 ## Notes
 
 - Mobile only: `isDesktopOnly` is `false` so it loads on mobile, but the gesture logic activates only when `Platform.isMobile` is true.
-- Content mode uses CSS `zoom`; the in-editor cursor position can be slightly off at non-100% zoom — switch to **Font size only** for heavy editing.
+- Content mode uses CSS `zoom`; the in-editor cursor position can be slightly off at non-100% zoom — switch to **Font size only** for heavy editing (figures still zoom there too).
 
 ## License
 
