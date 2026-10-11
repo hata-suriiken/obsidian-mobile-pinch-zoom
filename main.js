@@ -425,7 +425,12 @@ module.exports = class MobilePinchZoomPlugin extends Plugin {
     // the cap equals the normal one, so the layout is unchanged.
     const figureRule = this.settings.zoomFigures
       ? '.view-content .markdown-preview-view .image-embed, .view-content .markdown-source-view .image-embed { display: inline-block; max-width: 100%; overflow-x: auto; }\n' +
-        '.view-content .markdown-preview-view .image-embed img, .view-content .markdown-source-view .image-embed img { max-width: calc(100% * var(--mpz-zoom, 1)); }'
+        '.view-content .markdown-preview-view .image-embed img, .view-content .markdown-source-view .image-embed img { max-width: calc(100% * var(--mpz-zoom, 1)); }\n' +
+        // Live Preview (Obsidian 1.14+) wraps the image and pins it with
+        // width: 100%, which the raised max-width cannot exceed — the figure
+        // could shrink but never grow. width: auto restores natural sizing
+        // (identical at 100%) and lets the cap above take over when zoomed.
+        '.view-content .markdown-preview-view .image-embed .image-wrapper img:not([width]), .view-content .markdown-source-view .image-embed .image-wrapper img:not([width]) { width: auto; }'
       : '';
     const indicatorCss = [
       '.mpz-indicator {',
